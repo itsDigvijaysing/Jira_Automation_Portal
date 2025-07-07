@@ -38,11 +38,13 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'corsheaders.middleware.CorsMiddleware',
     'django.middleware.common.CommonMiddleware',
+    'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
+
 
 ROOT_URLCONF = 'jira_dashboard.urls'
 
@@ -142,7 +144,7 @@ JIRA_URL = os.getenv('JIRA_URL')
 JIRA_BASE_URL = JIRA_URL  # Alias for compatibility
 JIRA_EMAIL = os.getenv('JIRA_EMAIL')
 JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN')
-JIRA_PROJECT_KEY = os.getenv('PROJECT_KEY', 'CPG')
+JIRA_PROJECT_KEY = os.getenv('PROJECT_KEY', 'SAM1')  # Updated to use existing project
 
 # Gemini API Configuration
 GEMINI_API_KEY1 = os.getenv('GEMINI_API_KEY1')

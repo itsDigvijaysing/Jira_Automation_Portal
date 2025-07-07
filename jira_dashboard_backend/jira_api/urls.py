@@ -3,6 +3,9 @@ from django.urls import path
 from . import views
 
 urlpatterns = [
+    # Test endpoint
+    path('test/', views.test_jira_connection, name='test_jira_connection'),
+    
     # Issue viewing endpoints
     path('issues/', views.fetch_issues, name='fetch_issues'),
     path('issues/<str:issue_key>/', views.fetch_issue_details, name='fetch_issue_details'),

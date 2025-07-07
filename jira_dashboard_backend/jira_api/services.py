@@ -25,20 +25,31 @@ class JiraService:
         }
     
     def fetch_issues(self, max_results=50):
-        """Fetch all non-sample issues from the project"""
+        """Fetch all issues from the project"""
         url = f"{self.base_url}/rest/api/3/search"
         params = {
-            "jql": f"project={self.project_key} AND key NOT IN ({self.project_key}-1, {self.project_key}-2)",
+            "jql": f"project = {self.project_key} ORDER BY created DESC",
             "maxResults": max_results,
-            "fields": "summary,status,assignee,issuetype,priority,created,description"
+            "fields": "summary,status,assignee,issuetype,priority,created,description,updated,reporter"
         }
         
         try:
+            logger.info(f"Fetching issues with JQL: {params['jql']}")
             response = requests.get(url, headers=self.headers, params=params, auth=self.auth)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching issues: {e}")
+            # If the project key doesn't exist, try fetching all accessible issues
+            if "400" in str(e):
+                logger.warning(f"Project key {self.project_key} might not exist. Trying to fetch all accessible issues.")
+                params["jql"] = "ORDER BY created DESC"
+                try:
+                    response = requests.get(url, headers=self.headers, params=params, auth=self.auth)
+                    response.raise_for_status()
+                    return response.json()
+                except requests.exceptions.RequestException as fallback_error:
+                    logger.error(f"Fallback query also failed: {fallback_error}")
             raise
     
     def fetch_issue_details(self, issue_key):
@@ -150,7 +161,8 @@ class GeminiService:
         
         while attempts < len(self.api_keys) * retry_count:
             try:
-                model = genai.GenerativeModel('gemini-1.5-pro-latest')
+                # Use flash model for better rate limits
+                model = genai.GenerativeModel('gemini-1.5-flash')
                 response = model.generate_content(prompt)
                 return response.text
             except Exception as e:
@@ -158,13 +170,14 @@ class GeminiService:
                 logger.warning(f"Gemini API error with key {self.current_key_index}: {e}")
                 
                 if '429' in str(e) or 'quota' in str(e).lower():
-                    time.sleep(1)
+                    # Wait longer for quota issues
+                    time.sleep(5)
                 
                 self._rotate_key()
                 attempts += 1
                 
                 if attempts % len(self.api_keys) == 0:
-                    time.sleep(2)
+                    time.sleep(10)  # Longer wait between full rotations
         
         raise Exception(f"All Gemini API keys failed: {last_error}")
     
@@ -277,9 +290,23 @@ IMPORTANT: Make sure each test case is unique and thorough. The total number of 
                 return workflow_status
             
             # Step 2: Generate and create development tasks
-            dev_tasks = self.generate_development_tasks(requirement)
+            logger.info("Generating development tasks...")
+            time.sleep(2)  # Rate limiting before AI call
+            
+            try:
+                dev_tasks = self.generate_development_tasks(requirement)
+            except Exception as e:
+                if "429" in str(e) or "quota" in str(e).lower():
+                    workflow_status["errors"].append("AI service quota exceeded. Please try again later.")
+                    # Create manual fallback tasks
+                    dev_tasks = self._create_fallback_tasks(requirement)
+                    workflow_status["errors"].append("Using fallback task generation due to quota limits")
+                else:
+                    workflow_status["errors"].append(f"Failed to generate development tasks: {str(e)}")
+                    return workflow_status
+            
             if not dev_tasks:
-                workflow_status["errors"].append("Failed to generate development tasks")
+                workflow_status["errors"].append("No development tasks generated")
                 return workflow_status
             
             # Get available link types
@@ -293,7 +320,7 @@ IMPORTANT: Make sure each test case is unique and thorough. The total number of 
                         break
             
             # Create development task tickets
-            for task in dev_tasks:
+            for i, task in enumerate(dev_tasks):
                 description = (f"{task['summary']}\n\n"
                              f"Category: {task['category']}\n"
                              f"Component: {task['component']}\n"
@@ -313,40 +340,92 @@ IMPORTANT: Make sure each test case is unique and thorough. The total number of 
                     # Link to parent
                     self.jira.link_issues(workflow_status["parent_ticket"], task_key, link_type)
                     
-                    # Step 3: Generate and create test cases for this task
-                    time.sleep(1)  # Rate limiting
-                    test_cases = self.generate_test_cases(task["summary"])
+                    # Step 3: Generate and create test cases for this task (with quota protection)
+                    time.sleep(3)  # Rate limiting
+                    
+                    try:
+                        test_cases = self.generate_test_cases(task["summary"])
+                    except Exception as e:
+                        if "429" in str(e) or "quota" in str(e).lower():
+                            workflow_status["errors"].append(f"AI quota exceeded for test cases of task {task_key}")
+                            # Create basic test case manually
+                            test_cases = self._create_fallback_test_cases(task["title"])
+                        else:
+                            workflow_status["errors"].append(f"Failed to generate test cases for {task_key}: {str(e)}")
+                            continue
                     
                     if test_cases:
                         workflow_status["test_cases"][task_key] = []
                         
                         for tc in test_cases:
-                            steps_formatted = "\n".join([f"{i+1}. {step}" for i, step in enumerate(tc['steps'])])
-                            tc_description = f"""Test Case: {tc['test_name']}
+                            steps_formatted = "\n".join([f"{i+1}. {step}" for i, step in enumerate(tc.get('steps', ['Execute test']))])
+                            tc_description = f"""Test Case: {tc.get('test_name', 'Basic Test')}
             
-Description: {tc['description']}
+Description: {tc.get('description', 'Test the functionality')}
 
 Steps:
 {steps_formatted}
 
-Expected Result: {tc['expected_result']}
+Expected Result: {tc.get('expected_result', 'Functionality works as expected')}
 
-Priority: {tc['priority']}"""
+Priority: {tc.get('priority', 'Medium')}"""
                             
-                            tc_summary = f"Test: {tc['test_name']} [{tc['priority']}]"
+                            tc_summary = f"Test: {tc.get('test_name', 'Basic Test')} [{tc.get('priority', 'Medium')}]"
                             tc_result = self.jira.create_issue(tc_summary, tc_description, "Subtask", task_key)
                             
                             if tc_result.get("key"):
                                 workflow_status["test_cases"][task_key].append({
                                     "key": tc_result["key"],
-                                    "name": tc["test_name"],
-                                    "priority": tc["priority"]
+                                    "name": tc.get("test_name", "Basic Test"),
+                                    "priority": tc.get("priority", "Medium")
                                 })
                             
-                            time.sleep(1)  # Rate limiting
+                            time.sleep(2)  # Rate limiting
             
         except Exception as e:
             workflow_status["errors"].append(str(e))
             logger.error(f"Automation workflow error: {e}")
         
         return workflow_status
+    
+    def _create_fallback_tasks(self, requirement):
+        """Create basic fallback tasks when AI is unavailable"""
+        return [
+            {
+                "title": f"Backend Development for {requirement[:50]}...",
+                "summary": f"Develop the backend components and API endpoints for: {requirement}",
+                "category": "Backend",
+                "component": "API"
+            },
+            {
+                "title": f"Frontend Development for {requirement[:50]}...",
+                "summary": f"Create the user interface and frontend components for: {requirement}",
+                "category": "Frontend", 
+                "component": "UI"
+            },
+            {
+                "title": f"Testing & Integration for {requirement[:50]}...",
+                "summary": f"Create comprehensive tests and handle integration for: {requirement}",
+                "category": "Testing",
+                "component": "QA"
+            }
+        ]
+    
+    def _create_fallback_test_cases(self, task_title):
+        """Create basic fallback test cases when AI is unavailable"""
+        return [
+            {
+                "test_name": f"Basic Functionality Test for {task_title}",
+                "description": f"Test the core functionality of {task_title}",
+                "steps": ["Execute the main feature", "Verify output", "Check for errors"],
+                "expected_result": "Feature works correctly without errors",
+                "priority": "High"
+            },
+            {
+                "test_name": f"Edge Case Test for {task_title}",
+                "description": f"Test edge cases and boundary conditions for {task_title}",
+                "steps": ["Test with edge case inputs", "Verify handling", "Check system stability"],
+                "expected_result": "System handles edge cases gracefully",
+                "priority": "Medium"
+            }
+        ]

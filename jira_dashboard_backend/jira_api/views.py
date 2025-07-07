@@ -136,3 +136,38 @@ def get_workflow_status(request):
         "message": "Workflow status endpoint - to be implemented with WebSockets",
         "status": "ready"
     }, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+def test_jira_connection(request):
+    """Test Jira API connection and get basic info"""
+    try:
+        # Test basic connection by getting user info
+        url = f"{jira_service.base_url}/rest/api/3/myself"
+        import requests
+        response = requests.get(url, headers=jira_service.headers, auth=jira_service.auth)
+        response.raise_for_status()
+        user_info = response.json()
+        
+        # Get available projects
+        projects_url = f"{jira_service.base_url}/rest/api/3/project"
+        projects_response = requests.get(projects_url, headers=jira_service.headers, auth=jira_service.auth)
+        projects_response.raise_for_status()
+        projects = projects_response.json()
+        
+        return Response({
+            "connection": "success",
+            "user": user_info.get('displayName', 'Unknown'),
+            "email": user_info.get('emailAddress', 'Unknown'),
+            "jira_url": jira_service.base_url,
+            "configured_project": jira_service.project_key,
+            "available_projects": [{"key": p["key"], "name": p["name"]} for p in projects[:10]]
+        }, status=status.HTTP_200_OK)
+    except Exception as e:
+        logger.error(f"Error testing Jira connection: {e}")
+        return Response({
+            "connection": "failed",
+            "error": str(e),
+            "jira_url": jira_service.base_url,
+            "configured_project": jira_service.project_key,
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
