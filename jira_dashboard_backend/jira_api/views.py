@@ -1,77 +1,138 @@
-# views.py
-import json
-import requests
-from django.conf import settings
-from django.http import JsonResponse
+# jira_api/views.py
+from rest_framework import status
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
 from django.views.decorators.csrf import csrf_exempt
+import logging
 
-def get_jira_headers():
-    return {
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-    }
+from .services import JiraService, AutomationService
 
-def get_jira_auth():
-    return (settings.JIRA_EMAIL, settings.JIRA_API_TOKEN)
+logger = logging.getLogger(__name__)
 
-@csrf_exempt
-def get_issues(request):
-    """
-    Fetch issues from Jira
-    """
+# Initialize services
+jira_service = JiraService()
+automation_service = AutomationService()
+
+
+@api_view(['GET'])
+def fetch_issues(request):
+    """Fetch all Jira issues"""
     try:
-        # Default JQL query to get all issues from SCRUM project
-        jql_query = "project = SCRUM ORDER BY created DESC"
-        
-        # You can allow frontend to pass custom JQL
-        if request.method == "POST":
-            data = json.loads(request.body)
-            if "jql" in data:
-                jql_query = data["jql"]
-                
-        # API endpoint for searching issues
-        endpoint = f"{settings.JIRA_URL}/rest/api/3/search"
-        
-        # Parameters for the search
-        params = {
-            "jql": jql_query,
-            "maxResults": 50,  # Adjust as needed
-            "fields": "summary,description,status,assignee,priority,issuetype,created,updated"
-        }
-        
-        response = requests.get(
-            endpoint, 
-            headers=get_jira_headers(), 
-            auth=get_jira_auth(),
-            params=params
-        )
-        
-        if response.status_code == 200:
-            return JsonResponse(response.json())
-        else:
-            return JsonResponse({"error": response.text}, status=response.status_code)
-            
+        result = jira_service.fetch_issues()
+        return Response(result, status=status.HTTP_200_OK)
     except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+        logger.error(f"Error in fetch_issues: {e}")
+        return Response(
+            {"error": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
 
-@csrf_exempt
-def get_issue_details(request, issue_key):
-    """
-    Fetch details for a specific issue
-    """
+
+@api_view(['GET'])
+def fetch_issue_details(request, issue_key):
+    """Fetch details for a specific issue"""
     try:
-        endpoint = f"{settings.JIRA_URL}/rest/api/3/issue/{issue_key}"
-        
-        response = requests.get(
-            endpoint,
-            headers=get_jira_headers(),
-            auth=get_jira_auth()
-        )
-        
-        if response.status_code == 200:
-            return JsonResponse(response.json())
-        else:
-            return JsonResponse({"error": response.text}, status=response.status_code)
-            
+        result = jira_service.fetch_issue_details(issue_key)
+        return Response(result, status=status.HTTP_200_OK)
     except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+        logger.error(f"Error in fetch_issue_details: {e}")
+        return Response(
+            {"error": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@csrf_exempt
+def create_automation_workflow(request):
+    """Create automated workflow from requirement"""
+    try:
+        requirement = request.data.get('requirement')
+        if not requirement:
+            return Response(
+                {"error": "Requirement is required"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Run the automation workflow
+        result = automation_service.create_automated_workflow(requirement)
+        
+        # Check if there were any errors
+        if result.get("errors"):
+            return Response(result, status=status.HTTP_207_MULTI_STATUS)
+        
+        return Response(result, status=status.HTTP_201_CREATED)
+        
+    except Exception as e:
+        logger.error(f"Error in create_automation_workflow: {e}")
+        return Response(
+            {"error": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@csrf_exempt
+def generate_dev_tasks(request):
+    """Generate development tasks for a requirement"""
+    try:
+        requirement = request.data.get('requirement')
+        if not requirement:
+            return Response(
+                {"error": "Requirement is required"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        tasks = automation_service.generate_development_tasks(requirement)
+        if not tasks:
+            return Response(
+                {"error": "Failed to generate tasks"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        return Response({"tasks": tasks}, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Error in generate_dev_tasks: {e}")
+        return Response(
+            {"error": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['POST'])
+@csrf_exempt
+def generate_test_cases(request):
+    """Generate test cases for a task"""
+    try:
+        task_description = request.data.get('task_description')
+        if not task_description:
+            return Response(
+                {"error": "Task description is required"}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        test_cases = automation_service.generate_test_cases(task_description)
+        if not test_cases:
+            return Response(
+                {"error": "Failed to generate test cases"}, 
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
+        return Response({"test_cases": test_cases}, status=status.HTTP_200_OK)
+        
+    except Exception as e:
+        logger.error(f"Error in generate_test_cases: {e}")
+        return Response(
+            {"error": str(e)}, 
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+
+
+@api_view(['GET'])
+def get_workflow_status(request):
+    """Get status of ongoing workflows (placeholder for future websocket implementation)"""
+    return Response({
+        "message": "Workflow status endpoint - to be implemented with WebSockets",
+        "status": "ready"
+    }, status=status.HTTP_200_OK)
