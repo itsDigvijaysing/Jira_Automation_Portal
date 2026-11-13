@@ -1,228 +1,156 @@
 # Jira Automation Portal
 
-**Jira Automation Portal** is a web application designed to streamline Jira ticket management and sprint planning. It combines:
+A web app that combines a **Jira issue viewer** with an **AI-powered ticket & test-case generator**. From a single free-form requirement it creates a parent Jira ticket, generates 3–5 development tasks, links them to the parent, and generates 3–5 test cases per task as sub-tasks — all driven by Google Gemini.
 
-1. **Issue Viewer** — a React + Django interface for browsing and inspecting existing Jira issues.  
-2. **AI-Powered Ticket & Test-Case Generator** — a Python pipeline (to be integrated into Django) that uses the Google Gemini API to automatically generate development subtasks and test-case subtasks from high-level requirements.
+- **Frontend:** React (Create React App), Tailwind CSS, Framer Motion, Lucide icons.
+- **Backend:** Django + Django REST Framework, `requests` (Jira Cloud REST v3), `google-genai` (Gemini).
 
 ---
 
 ## Table of Contents
 
-1. [Core Features](#core-features)  
-2. [Technology Stack](#technology-stack)  
-3. [File Structure](#file-structure)  
-4. [Prerequisites](#prerequisites)  
-5. [Setup & Installation](#setup--installation)  
-6. [Running the Application](#running-the-application)  
-7. [Integration Plan](#integration-plan)  
-8. [Core Functions](#core-functions)  
-9. [Error Handling](#error-handling)  
-10. [Extensibility](#extensibility)  
+1. [Architecture](#architecture)
+2. [Project Structure](#project-structure)
+3. [Prerequisites](#prerequisites)
+4. [Setup](#setup)
+5. [Running](#running)
+6. [API Endpoints](#api-endpoints)
+7. [How the AI workflow works](#how-the-ai-workflow-works)
+8. [Notes & Known Limitations](#notes--known-limitations)
 
 ---
 
-## Core Features
+## Architecture
 
-### A. Issue Viewer (Implemented)
+```
+React SPA (port 3000)  ──HTTP/JSON──>  Django REST API (port 8000)  ──>  Jira Cloud REST v3
+                                                  │
+                                                  └──>  Google Gemini (google-genai SDK)
+```
 
-- **Fetch & List Issues**: Displays all issues from a configured Jira project (default: `SCRUM`), showing issue key, summary, status, and assignee.  
-- **Detail View**: Shows description, issue type, priority, creation date, and other fields.
-
-### B. AI-Powered Ticket & Test-Case Generation (Standalone)
-
-- **Requirement Agent**  
-  1. Prompts Google Gemini API to generate 3–5 high-level development subtasks from a free-form requirement.  
-  2. Creates each subtask as a Jira issue via REST API and links them to a parent ticket.  
-- **Test Agent**  
-  1. For each development task, prompts Gemini to generate 3–5 detailed test cases.  
-  2. Creates them as Jira subtasks under their respective development tasks.  
-- **Features**: API-key rotation, rate-limit backoff, JSON parsing, and issue linking.
+The single active frontend component is `src/components/JiraAutomationPortal.jsx` (two tabs: **Issues** and **AI Automation**). The backend exposes the API under `/api/`. All Jira and Gemini calls happen server-side using credentials from a `.env` file.
 
 ---
 
-## Technology Stack
-
-- **Frontend**  
-  - React.js, Lucide React, Framer Motion, Tailwind CSS  
-  - Node.js (development server & build)  
-
-- **Backend**  
-  - Django, Django REST Framework, django-cors-headers  
-
-- **AI & Automation**  
-  - Python 3.9+, `google-generativeai`, `requests`, `python-dotenv`  
-
-- **Jira Integration**  
-  - Jira Cloud/Server REST API  
----
-
-## File Structure
+## Project Structure
 
 ```
 .
-├── .git/                              # Git metadata
-├── .gitignore
-├── jira-autonomous.py                # Standalone AI ticket & test-case generator
-├── jira\_dashboard\_backend/           # Django backend app
+├── requirements.txt                      # Backend Python dependencies
+├── README.md
+├── OLD/
+│   └── jira-autonomous.py                # Original standalone CLI script (kept for reference; not used by the app)
+├── jira_dashboard_backend/               # Django project
 │   ├── manage.py
-│   ├── jira\_api/                     # Django app for Jira interactions
-│   │   ├── views.py                  # Issue-fetch & (future) AI endpoints
+│   ├── .env.example                      # Copy to .env and fill in
+│   ├── jira_api/                         # Django app
+│   │   ├── services.py                   # JiraService, GeminiService, AutomationService
+│   │   ├── views.py                      # DRF endpoints
 │   │   └── urls.py
-│   ├── your\_project\_name/            # Django project settings
-│   │   ├── settings.py
-│   │   └── urls.py
-│   └── .env                          # Backend environment variables
-├── jira\_dashboard\_frontend\_c/        # React frontend
-│   ├── package.json
-│   ├── public/
-│   └── src/
-│       └── JiraIssueTracker.jsx      # Main component for issue browsing
-└── README.md
-
+│   └── jira_dashboard/                   # Django settings/urls/asgi/wsgi
+│       ├── settings.py
+│       └── urls.py
+└── jira_dashboard_frontend_c/            # React frontend
+    ├── package.json
+    ├── .env.example                      # Optional REACT_APP_API_BASE_URL override
+    ├── tailwind.config.js
+    └── src/
+        ├── App.js                        # Renders JiraAutomationPortal
+        └── components/JiraAutomationPortal.jsx
 ```
 
 ---
 
 ## Prerequisites
 
-- **Node.js** & **npm** (or yarn)  
-- **Python 3.8+** & **pip**  
-- **Jira** Cloud or Server account:  
-  - Email & API token  
-  - Base URL (e.g., `https://your-domain.atlassian.net`)  
-- **Google Gemini API key(s)**  
-- **Git**
+- **Python 3.10+** (tested on 3.13) and **Node.js 18+**.
+- A **Jira Cloud** account with an API token: https://id.atlassian.com/manage-profile/security/api-tokens
+- One or two **Google Gemini API keys** (Gemini Developer API): https://aistudio.google.com/apikey
 
 ---
 
-## Setup & Installation
+## Setup
 
-1. **Clone repository**  
-   ```bash
-   git clone <repo-url>
-   cd Jira_Automation_Portal
+### 1. Backend
 
-2. **Backend (Django)**
+```bash
+cd jira_dashboard_backend
+python -m venv venv
+source venv/bin/activate            # Windows: venv\Scripts\activate
+pip install -r ../requirements.txt
 
-   ```bash
-   cd jira_dashboard_backend
-   python -m venv venv
-   source venv/bin/activate          # Windows: venv\Scripts\activate
-   pip install django djangorestframework \
-               requests python-dotenv \
-               django-cors-headers google-generativeai
-   ```
+cp .env.example .env                # then edit .env with your real values
+python manage.py migrate
+```
 
-   * Create a `.env` file in `jira_dashboard_backend`:
+Key `.env` variables (see `.env.example` for the full list):
 
-     ```env
-     SECRET_KEY=your_django_secret_key
-     DEBUG=True
-     JIRA_URL=https://your-domain.atlassian.net
-     JIRA_EMAIL=your-email@example.com
-     JIRA_API_TOKEN=your_jira_api_token
-     GEMINI_API_KEY1=your_first_gemini_key
-     GEMINI_API_KEY2=your_second_gemini_key
-     ```
-   * In `settings.py`:
+| Variable | Purpose |
+|---|---|
+| `SECRET_KEY`, `DEBUG` | Django config |
+| `JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN` | Jira Cloud auth |
+| `PROJECT_KEY` | Jira project to read/write (e.g. `SCRUM`) |
+| `JIRA_SUBTASK_ISSUE_TYPE` | Sub-task type name (`Subtask` or `Sub-task`) |
+| `GEMINI_API_KEY1`, `GEMINI_API_KEY2` | Gemini keys (2nd optional, used for rotation) |
+| `GEMINI_MODEL` | Defaults to `gemini-2.5-flash` |
 
-     * Load `.env` (e.g., via `python-dotenv` or `django-environ`).
-     * Add `'corsheaders'` to `INSTALLED_APPS` and `'corsheaders.middleware.CorsMiddleware'` to `MIDDLEWARE`.
-     * Set `CORS_ALLOWED_ORIGINS = ["http://localhost:3000"]`.
-   * Apply migrations:
+### 2. Frontend
 
-     ```bash
-     python manage.py migrate
-     ```
-
-3. **Frontend (React)**
-
-   ```bash
-   cd ../jira_dashboard_frontend_c
-   npm install                       # or yarn install
-   ```
-
-4. **Standalone AI Script**
-
-   * Ensure `jira-autonomous.py` and a `.env` in the project root contain:
-
-     ```env
-     JIRA_EMAIL=your-email@example.com
-     JIRA_API_TOKEN=your_jira_api_token
-     JIRA_BASE_URL=https://your-domain.atlassian.net
-     PROJECT_KEY=YOUR_JIRA_PROJECT_KEY
-     GEMINI_API_KEY1=your_first_gemini_key
-     GEMINI_API_KEY2=your_second_gemini_key
-     ```
+```bash
+cd jira_dashboard_frontend_c
+npm install
+# Optional: echo "REACT_APP_API_BASE_URL=http://localhost:8000" > .env
+```
 
 ---
 
-## Running the Application
+## Running
 
-1. **Start Django**
+```bash
+# Terminal 1 — backend
+cd jira_dashboard_backend && source venv/bin/activate
+python manage.py runserver            # http://localhost:8000
 
-   ```bash
-   cd jira_dashboard_backend
-   source venv/bin/activate
-   python manage.py runserver         # http://localhost:8000
-   ```
+# Terminal 2 — frontend
+cd jira_dashboard_frontend_c
+npm start                             # http://localhost:3000
+```
 
-2. **Start React**
-
-   ```bash
-   cd ../jira_dashboard_frontend_c
-   npm start                          # http://localhost:3000
-   ```
-
-3. **Test the AI Script (Standalone)**
-
-   ```bash
-   cd ..
-   python jira-autonomous.py
-   ```
-
-   * Enter a requirement when prompted.
-   * Verify creation of parent ticket, development subtasks, and test-case subtasks in Jira.
+Verify Jira connectivity at `http://localhost:8000/api/test/`.
 
 ---
 
-## Integration Plan
+## API Endpoints
 
-1. **Refactor** `jira-autonomous.py` into modular functions.
-2. **Expose** them via new Django REST endpoints (e.g., `/api/create-ai-tasks/`).
-3. **Update Frontend**:
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/test/` | Test Jira connection; returns the configured user + projects |
+| GET | `/api/issues/` | List issues for the configured project |
+| GET | `/api/issues/<key>/` | Issue detail |
+| POST | `/api/automation/workflow/` | Run the full AI workflow (`{"requirement": "..."}`) |
+| POST | `/api/automation/generate-tasks/` | Generate dev tasks only |
+| POST | `/api/automation/generate-tests/` | Generate test cases only |
 
-   * Add an input form or PDF upload component.
-   * Call the new endpoints and display real-time feedback (via WebSockets or polling).
-
----
-
-## Core Functions
-
-* **`generate_content_with_fallback(prompt: str) -> str`**
-  Handles Gemini API calls with retry and key rotation.
-
-* **`generate_development_tasks(requirement: str) -> list`**
-  Generates and parses 3–5 development task descriptions from the requirement.
-
-* **`create_jira_ticket(summary: str, description: str) -> str`**
-  Creates a Jira issue and returns its key.
-
-* **`generate_and_create_test_cases(task_description: str, task_key: str) -> list`**
-  Generates test cases for a task and creates them as Jira subtasks.
-
-* **`create_jira_subtask(parent_key: str, summary: str, description: str) -> str`**
-  Creates a subtask under a given parent issue.
-
-* **`fetch_visible_tickets() -> list`**
-  Retrieves all non-sample issues from the configured project.
+Issue listing uses Atlassian's current **`/rest/api/3/search/jql`** enhanced-search endpoint (the legacy `/rest/api/3/search` was removed by Atlassian in late 2025).
 
 ---
 
-## Error Handling
+## How the AI workflow works
 
-* **JSON Parsing**: Logs raw AI responses when parsing fails.
-* **API Retries**: Retries Jira and Gemini calls up to 3 times on failures.
-* **Key Rotation**: Automatically switches Gemini API keys upon rate-limit or quota errors.
+`AutomationService.create_automated_workflow(requirement)` ([services.py](jira_dashboard_backend/jira_api/services.py)):
+
+1. Create a **parent** Jira Task for the requirement.
+2. Ask Gemini for 3–5 **development tasks** (JSON output enforced via `response_mime_type`).
+3. Create each as a Jira Task and **link** it to the parent.
+4. For each task, ask Gemini for 3–5 **test cases** and create them as **sub-tasks**.
+5. Return a status object (parent key, tasks, nested test cases, and any errors).
+
+Resilience: API-key rotation + backoff on Gemini 429/quota errors, and manual fallback tasks/test cases if the AI is unavailable.
+
 ---
+
+## Notes & Known Limitations
+
+- **Auth:** the API currently uses `AllowAny`. Do not expose it publicly without adding authentication — the automation endpoints create Jira tickets and consume Gemini quota.
+- **Synchronous workflow:** the full workflow runs inline with rate-limit `sleep`s and can take ~30–60s for a large requirement. For production, move it to a background task (Celery/RQ/Channels) and stream progress.
+- `OLD/jira-autonomous.py` is the original standalone script and is **not** imported by the app; it's kept for reference only.

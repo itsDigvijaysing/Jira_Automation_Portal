@@ -1,61 +1,93 @@
 # jira_api/views.py
+from functools import lru_cache
+import logging
+import re
+
+from django.core.exceptions import ImproperlyConfigured
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
-from django.views.decorators.csrf import csrf_exempt
-import logging
 
-from .services import JiraService, AutomationService
+from .services import JiraService, AutomationService, JiraAPIError
 
 logger = logging.getLogger(__name__)
 
-# Initialize services
-jira_service = JiraService()
-automation_service = AutomationService()
+# Jira issue keys look like "SCRUM-12". Checked before the key goes into a Jira URL.
+ISSUE_KEY_RE = re.compile(r'^[A-Za-z][A-Za-z0-9_]*-[0-9]+$')
+MAX_TEXT_LENGTH = 2000  # matches the textarea limit in the frontend
+
+
+def _error_response(error):
+    """Map an exception to a JSON error response with a fitting status code."""
+    if isinstance(error, JiraAPIError):
+        # Pass 404 through (unknown issue); anything else is an upstream failure.
+        code = status.HTTP_404_NOT_FOUND if error.status_code == 404 else status.HTTP_502_BAD_GATEWAY
+    else:
+        code = status.HTTP_500_INTERNAL_SERVER_ERROR
+    return Response({"error": str(error)}, status=code)
+
+
+def _read_text(request, field, label):
+    """Return (text, None) for a valid string field, or (None, error Response)."""
+    data = request.data if isinstance(request.data, dict) else {}
+    value = data.get(field)
+    if not isinstance(value, str) or not value.strip():
+        return None, Response({"error": f"{label} is required"}, status=status.HTTP_400_BAD_REQUEST)
+    value = value.strip()
+    if len(value) > MAX_TEXT_LENGTH:
+        return None, Response(
+            {"error": f"{label} must be at most {MAX_TEXT_LENGTH} characters"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    return value, None
+
+
+# Lazily build services so a missing/invalid env var (e.g. Gemini keys) surfaces
+# as a request-time error instead of crashing the app at import time.
+@lru_cache(maxsize=1)
+def get_jira_service():
+    return JiraService()
+
+
+@lru_cache(maxsize=1)
+def get_automation_service():
+    return AutomationService()
 
 
 @api_view(['GET'])
 def fetch_issues(request):
     """Fetch all Jira issues"""
     try:
-        result = jira_service.fetch_issues()
+        result = get_jira_service().fetch_issues()
         return Response(result, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(f"Error in fetch_issues: {e}")
-        return Response(
-            {"error": str(e)}, 
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        return _error_response(e)
 
 
 @api_view(['GET'])
 def fetch_issue_details(request, issue_key):
     """Fetch details for a specific issue"""
+    if not ISSUE_KEY_RE.match(issue_key):
+        return Response({"error": "Invalid issue key"}, status=status.HTTP_400_BAD_REQUEST)
     try:
-        result = jira_service.fetch_issue_details(issue_key)
+        result = get_jira_service().fetch_issue_details(issue_key)
         return Response(result, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(f"Error in fetch_issue_details: {e}")
-        return Response(
-            {"error": str(e)}, 
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        return _error_response(e)
 
 
 @api_view(['POST'])
-@csrf_exempt
 def create_automation_workflow(request):
     """Create automated workflow from requirement"""
     try:
-        requirement = request.data.get('requirement')
-        if not requirement:
-            return Response(
-                {"error": "Requirement is required"}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        requirement, invalid = _read_text(request, 'requirement', 'Requirement')
+        if invalid:
+            return invalid
         
         # Run the automation workflow
-        result = automation_service.create_automated_workflow(requirement)
+        result = get_automation_service().create_automated_workflow(requirement)
         
         # Check if there were any errors
         if result.get("errors"):
@@ -65,68 +97,51 @@ def create_automation_workflow(request):
         
     except Exception as e:
         logger.error(f"Error in create_automation_workflow: {e}")
-        return Response(
-            {"error": str(e)}, 
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        return _error_response(e)
 
 
 @api_view(['POST'])
-@csrf_exempt
 def generate_dev_tasks(request):
     """Generate development tasks for a requirement"""
     try:
-        requirement = request.data.get('requirement')
-        if not requirement:
-            return Response(
-                {"error": "Requirement is required"}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        requirement, invalid = _read_text(request, 'requirement', 'Requirement')
+        if invalid:
+            return invalid
         
-        tasks = automation_service.generate_development_tasks(requirement)
+        tasks = get_automation_service().generate_development_tasks(requirement)
         if not tasks:
             return Response(
-                {"error": "Failed to generate tasks"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {"error": "The AI returned no usable tasks"},
+                status=status.HTTP_502_BAD_GATEWAY
             )
         
         return Response({"tasks": tasks}, status=status.HTTP_200_OK)
         
     except Exception as e:
         logger.error(f"Error in generate_dev_tasks: {e}")
-        return Response(
-            {"error": str(e)}, 
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        return _error_response(e)
 
 
 @api_view(['POST'])
-@csrf_exempt
 def generate_test_cases(request):
     """Generate test cases for a task"""
     try:
-        task_description = request.data.get('task_description')
-        if not task_description:
-            return Response(
-                {"error": "Task description is required"}, 
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        task_description, invalid = _read_text(request, 'task_description', 'Task description')
+        if invalid:
+            return invalid
         
-        test_cases = automation_service.generate_test_cases(task_description)
+        test_cases = get_automation_service().generate_test_cases(task_description)
         if not test_cases:
             return Response(
-                {"error": "Failed to generate test cases"}, 
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                {"error": "The AI returned no usable test cases"},
+                status=status.HTTP_502_BAD_GATEWAY
             )
         
         return Response({"test_cases": test_cases}, status=status.HTTP_200_OK)
         
     except Exception as e:
         logger.error(f"Error in generate_test_cases: {e}")
-        return Response(
-            {"error": str(e)}, 
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
-        )
+        return _error_response(e)
 
 
 @api_view(['GET'])
@@ -142,26 +157,22 @@ def get_workflow_status(request):
 def test_jira_connection(request):
     """Test Jira API connection and get basic info"""
     try:
-        # Test basic connection by getting user info
-        url = f"{jira_service.base_url}/rest/api/3/myself"
-        import requests
-        response = requests.get(url, headers=jira_service.headers, auth=jira_service.auth)
-        response.raise_for_status()
-        user_info = response.json()
-        
-        # Get available projects
-        projects_url = f"{jira_service.base_url}/rest/api/3/project"
-        projects_response = requests.get(projects_url, headers=jira_service.headers, auth=jira_service.auth)
-        projects_response.raise_for_status()
-        projects = projects_response.json()
-        
+        jira_service = get_jira_service()
+    except ImproperlyConfigured as e:
+        return Response({"connection": "failed", "error": str(e)},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    try:
+        user_info = jira_service.get_myself()
+        projects = jira_service.get_projects(limit=10)
+
         return Response({
             "connection": "success",
             "user": user_info.get('displayName', 'Unknown'),
             "email": user_info.get('emailAddress', 'Unknown'),
             "jira_url": jira_service.base_url,
             "configured_project": jira_service.project_key,
-            "available_projects": [{"key": p["key"], "name": p["name"]} for p in projects[:10]]
+            "available_projects": [{"key": p.get("key"), "name": p.get("name")} for p in projects]
         }, status=status.HTTP_200_OK)
     except Exception as e:
         logger.error(f"Error testing Jira connection: {e}")
@@ -170,4 +181,5 @@ def test_jira_connection(request):
             "error": str(e),
             "jira_url": jira_service.base_url,
             "configured_project": jira_service.project_key,
-        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        }, status=status.HTTP_502_BAD_GATEWAY if isinstance(e, JiraAPIError)
+           else status.HTTP_500_INTERNAL_SERVER_ERROR)

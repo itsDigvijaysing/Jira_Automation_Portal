@@ -144,11 +144,20 @@ JIRA_URL = os.getenv('JIRA_URL')
 JIRA_BASE_URL = JIRA_URL  # Alias for compatibility
 JIRA_EMAIL = os.getenv('JIRA_EMAIL')
 JIRA_API_TOKEN = os.getenv('JIRA_API_TOKEN')
-JIRA_PROJECT_KEY = os.getenv('PROJECT_KEY', 'SAM1')  # Updated to use existing project
+JIRA_PROJECT_KEY = os.getenv('PROJECT_KEY', 'SCRUM')
+try:
+    JIRA_MAX_RESULTS = int(os.getenv('JIRA_MAX_RESULTS', '50'))
+except ValueError:
+    JIRA_MAX_RESULTS = 50
+# Name of the sub-task issue type in your Jira project. Many sites use
+# "Sub-task" (with a hyphen) rather than "Subtask" — make it configurable.
+JIRA_SUBTASK_ISSUE_TYPE = os.getenv('JIRA_SUBTASK_ISSUE_TYPE', 'Subtask')
 
-# Gemini API Configuration
+# Gemini API Configuration (Gemini Developer API keys from https://aistudio.google.com/apikey)
 GEMINI_API_KEY1 = os.getenv('GEMINI_API_KEY1')
 GEMINI_API_KEY2 = os.getenv('GEMINI_API_KEY2')
+# gemini-1.5-* models were retired in 2025; default to a current model.
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
 
 # Logging configuration
 LOGGING = {

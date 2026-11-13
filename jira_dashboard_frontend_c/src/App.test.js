@@ -1,8 +1,15 @@
 import { render, screen } from '@testing-library/react';
 import App from './App';
 
-test('renders learn react link', () => {
+beforeEach(() => {
+  global.fetch = jest.fn(() =>
+    Promise.resolve({ ok: true, json: () => Promise.resolve({ issues: [] }) })
+  );
+});
+
+test('renders the portal and loads issues', async () => {
   render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+  expect(screen.getByText(/jira automation portal/i)).toBeInTheDocument();
+  expect(await screen.findByText(/no issues found/i)).toBeInTheDocument();
+  expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining('/api/issues/'));
 });

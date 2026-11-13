@@ -1,11 +1,65 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  Loader2, Bug, ClipboardList, BookOpen, Rocket, 
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+  Loader2, Bug, ClipboardList, BookOpen, Rocket,
   PlusCircle, CheckCircle, XCircle, AlertCircle,
   ChevronRight, ChevronDown, Sparkles, TestTube,
-  Link2, FileText, RefreshCw
+  FileText, RefreshCw
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+
+// API base URL — override with REACT_APP_API_BASE_URL (see .env.example).
+const API_BASE = process.env.REACT_APP_API_BASE_URL || 'http://localhost:8000';
+
+// Safely format a date string; Jira fields can be missing/invalid.
+const formatDate = (value) => {
+  if (!value) return '—';
+  const d = new Date(value);
+  return isNaN(d.getTime()) ? '—' : d.toLocaleDateString();
+};
+
+// Jira's v3 API returns descriptions as Atlassian Document Format (a JSON tree).
+// Flatten it to plain text: each block on its own line, hard breaks as newlines.
+const INLINE_ADF_TYPES = ['text', 'hardBreak', 'mention', 'emoji', 'inlineCard'];
+
+const adfToText = (node) => {
+  if (!node) return '';
+  if (typeof node === 'string') return node;
+  if (node.type === 'text') return node.text || '';
+  if (node.type === 'hardBreak') return '\n';
+  if (node.type === 'mention' || node.type === 'emoji') return node.attrs?.text || '';
+  if (node.type === 'inlineCard') return node.attrs?.url || '';
+  const children = Array.isArray(node.content) ? node.content : [];
+  return children
+    .map((child) => adfToText(child) + (INLINE_ADF_TYPES.includes(child?.type) ? '' : '\n'))
+    .join('')
+    .replace(/\n{3,}/g, '\n\n');
+};
+
+// Build an Error from a failed response, preferring the backend's {"error": ...} message.
+const responseError = async (response) => {
+  let detail = '';
+  try {
+    detail = (await response.json())?.error || '';
+  } catch (parseError) {
+    // Not JSON (e.g. an HTML error page): fall back to the status code.
+  }
+  return new Error(detail || `HTTP error! Status: ${response.status}`);
+};
+
+const getPriorityColor = (priority) => {
+  switch (priority?.toLowerCase()) {
+    case 'highest':
+    case 'high':
+      return 'bg-red-100 text-red-700';
+    case 'medium':
+      return 'bg-yellow-100 text-yellow-700';
+    case 'low':
+    case 'lowest':
+      return 'bg-green-100 text-green-700';
+    default:
+      return 'bg-jira-gray-100 text-jira-gray-700';
+  }
+};
 
 const JiraAutomationPortal = () => {
   // State management
@@ -21,29 +75,30 @@ const JiraAutomationPortal = () => {
   const [automationResult, setAutomationResult] = useState(null);
   const [expandedTasks, setExpandedTasks] = useState({});
 
-  useEffect(() => {
-    fetchIssues();
-  }, []);
-
-  const fetchIssues = async () => {
+  const fetchIssues = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-      const response = await fetch('http://localhost:8000/api/issues/');
-      if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+      const response = await fetch(`${API_BASE}/api/issues/`);
+      if (!response.ok) throw await responseError(response);
       const data = await response.json();
       setIssues(data.issues || []);
-      setLoading(false);
     } catch (err) {
       setError(`Failed to fetch issues: ${err.message}`);
+    } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    fetchIssues();
+  }, [fetchIssues]);
 
   const fetchIssueDetails = async (issueKey) => {
     try {
-      const response = await fetch(`http://localhost:8000/api/issues/${issueKey}/`);
-      if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+      setError(null);
+      const response = await fetch(`${API_BASE}/api/issues/${encodeURIComponent(issueKey)}/`);
+      if (!response.ok) throw await responseError(response);
       const data = await response.json();
       setSelectedIssue(data);
     } catch (err) {
@@ -62,7 +117,7 @@ const JiraAutomationPortal = () => {
       setError(null);
       setAutomationResult(null);
 
-      const response = await fetch('http://localhost:8000/api/automation/workflow/', {
+      const response = await fetch(`${API_BASE}/api/automation/workflow/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -70,8 +125,8 @@ const JiraAutomationPortal = () => {
         body: JSON.stringify({ requirement }),
       });
 
-      if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
-      
+      if (!response.ok) throw await responseError(response);
+
       const result = await response.json();
       setAutomationResult(result);
       
@@ -123,7 +178,8 @@ const JiraAutomationPortal = () => {
       case 'task': return <ClipboardList size={20} />;
       case 'story': return <BookOpen size={20} />;
       case 'epic': return <Rocket size={20} />;
-      case 'subtask': return <TestTube size={20} />;
+      case 'subtask':
+      case 'sub-task': return <TestTube size={20} />;
       default: return <ClipboardList size={20} />;
     }
   };
@@ -314,14 +370,8 @@ const JiraAutomationPortal = () => {
                         <span className="jira-status-badge bg-jira-gray-100 text-jira-gray-700">
                           {selectedIssue.fields?.issuetype?.name}
                         </span>
-                        <span className={`jira-status-badge ${
-                          selectedIssue.fields?.priority?.name === 'High' 
-                            ? 'bg-red-100 text-red-700'
-                            : selectedIssue.fields?.priority?.name === 'Medium'
-                            ? 'bg-yellow-100 text-yellow-700'
-                            : 'bg-green-100 text-green-700'
-                        }`}>
-                          {selectedIssue.fields?.priority?.name || 'Medium'}
+                        <span className={`jira-status-badge ${getPriorityColor(selectedIssue.fields?.priority?.name)}`}>
+                          {selectedIssue.fields?.priority?.name || 'No priority'}
                         </span>
                       </div>
                     </div>
@@ -340,11 +390,11 @@ const JiraAutomationPortal = () => {
                       <div className="space-y-3">
                         <div>
                           <span className="block text-jira-gray-600 font-medium mb-1">Created</span>
-                          <span className="text-jira-gray-900">{new Date(selectedIssue.fields?.created).toLocaleDateString()}</span>
+                          <span className="text-jira-gray-900">{formatDate(selectedIssue.fields?.created)}</span>
                         </div>
                         <div>
                           <span className="block text-jira-gray-600 font-medium mb-1">Updated</span>
-                          <span className="text-jira-gray-900">{new Date(selectedIssue.fields?.updated).toLocaleDateString()}</span>
+                          <span className="text-jira-gray-900">{formatDate(selectedIssue.fields?.updated)}</span>
                         </div>
                       </div>
                     </div>
@@ -355,12 +405,9 @@ const JiraAutomationPortal = () => {
                         Description
                       </h4>
                       <div className="bg-jira-gray-50 p-4 rounded-lg text-sm border border-jira-gray-200">
-                        {selectedIssue.fields?.description ? (
-                          <div className="prose prose-sm max-w-none text-jira-gray-700">
-                            {typeof selectedIssue.fields.description === 'object' 
-                              ? 'Complex formatting (view in Jira for full details)' 
-                              : selectedIssue.fields.description 
-                            }
+                        {adfToText(selectedIssue.fields?.description).trim() ? (
+                          <div className="text-jira-gray-700 whitespace-pre-wrap break-words">
+                            {adfToText(selectedIssue.fields.description).trim()}
                           </div>
                         ) : (
                           <em className="text-jira-gray-500">No description provided</em>
@@ -407,6 +454,7 @@ const JiraAutomationPortal = () => {
                     <textarea
                       value={requirement}
                       onChange={(e) => setRequirement(e.target.value)}
+                      maxLength={2000}
                       className="w-full px-4 py-3 border border-jira-gray-300 rounded-lg focus:ring-2 focus:ring-jira-blue focus:border-jira-blue transition-colors text-jira-gray-900 placeholder-jira-gray-500"
                       rows="4"
                       placeholder="Example: Build a user authentication system with email verification, password reset functionality, and OAuth integration for Google and GitHub..."
@@ -529,13 +577,7 @@ const JiraAutomationPortal = () => {
                                         <CheckCircle className="text-green-500" size={14} />
                                         <span className="font-mono text-gray-600">{testCase.key}</span>
                                         <span className="text-gray-700">{testCase.name}</span>
-                                        <span className={`px-2 py-0.5 text-xs rounded-full ${
-                                          testCase.priority === 'High' 
-                                            ? 'bg-red-100 text-red-700'
-                                            : testCase.priority === 'Medium'
-                                            ? 'bg-yellow-100 text-yellow-700'
-                                            : 'bg-green-100 text-green-700'
-                                        }`}>
+                                        <span className={`px-2 py-0.5 text-xs rounded-full ${getPriorityColor(testCase.priority)}`}>
                                           {testCase.priority}
                                         </span>
                                       </div>
